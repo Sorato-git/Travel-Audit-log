@@ -61,12 +61,20 @@ def add_expense(trip_id, category, item, amount, sat, detail):
 def delete_row(worksheet, id_col_val, id_col_index=1):
     try:
         cell = worksheet.find(id_col_val, in_column=id_col_index)
-        worksheet.delete_rows(cell.row)
+        
+        # バージョン互換性対応: delete_rows がなければ delete_row を試す
+        if hasattr(worksheet, 'delete_rows'):
+            worksheet.delete_rows(cell.row)
+        else:
+            worksheet.delete_row(cell.row) # 古いバージョン用
+            
         st.success("削除完了")
         time.sleep(1)
         st.rerun()
     except gspread.exceptions.CellNotFound:
-        st.error("データが見つかりませんでした。")
+        st.error("指定されたIDのデータが見つかりませんでした。")
+    except Exception as e:
+        st.error(f"削除エラー: {e}")
 
 def update_trip_status(trip_id, new_status):
     try:
@@ -189,22 +197,53 @@ elif choice == "管理・修正 (Admin)":
             if st.button("ステータス更新"):
                 update_trip_status(target_t_id, new_status)
 
-    # 3. 削除機能
+# 3. 削除機能
     with tab3:
         st.subheader("危険区域: データ削除")
-        st.warning("削除は取り消せません。慎重に操作してください。")
+        st.warning("削除されたデータは復元できません。慎重に操作してください。")
         
         del_type = st.radio("削除対象", ["支出データ (1件)", "旅行プロジェクト (全体)"], horizontal=True)
         
+        # --- A. 支出データ削除 ---
         if del_type == "支出データ (1件)":
             expense_id = st.text_input("削除する entry_id を入力")
             st.caption("※台帳閲覧タブで entry_id を確認し、コピーしてください")
+            
             if st.button("支出削除実行"):
-                delete_row(worksheet_expenses, expense_id, id_col_index=1)
+                if expense_id:
+                    delete_row(worksheet_expenses, expense_id, id_col_index=1)
+                else:
+                    st.error("IDを入力してください。")
                 
+        # --- B. 旅行プロジェクト削除 (確認機能付き) ---
         elif del_type == "旅行プロジェクト (全体)":
             df_trips = load_data(worksheet_trips)
+            
             if not df_trips.empty:
-                del_trip_id = st.selectbox("削除する旅行", df_trips['trip_id'].tolist(), format_func=lambda x: df_trips[df_trips['trip_id'] == x]['trip_name'].values[0])
-                if st.button("旅行削除実行"):
-                    delete_row(worksheet_trips, del_trip_id, id_col_index=1)
+                # 選択肢の作成
+                t_dict = df_trips.set_index('trip_id')['trip_name'].to_dict()
+                del_trip_id = st.selectbox(
+                    "削除する旅行を選択", 
+                    list(t_dict.keys()), 
+                    format_func=lambda x: t_dict[x]
+                )
+                
+                target_name = t_dict[del_trip_id]
+                
+                st.markdown(f"""
+                <div style="background-color: #3f0e0e; padding: 10px; border-radius: 5px; border: 1px solid #ff4b4b;">
+                    <strong>⚠️ 警告:</strong> 旅行「{target_name}」を削除しようとしています。<br>
+                    紐付くすべてのデータへのアクセスが失われる可能性があります。
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # 安全装置: 名前入力確認
+                confirm_name = st.text_input(f"確認のため、旅行名「{target_name}」を正確に入力してください")
+                
+                if st.button("プロジェクト完全削除"):
+                    if confirm_name == target_name:
+                        delete_row(worksheet_trips, del_trip_id, id_col_index=1)
+                    else:
+                        st.error(f"旅行名が一致しません。削除を中止しました。")
+            else:
+                st.info("削除可能な旅行プロジェクトがありません。")
