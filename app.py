@@ -10,12 +10,11 @@ import time
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 SPREADSHEET_NAME = "TravelAuditDB"
 
-st.set_page_config(page_title="Travel Auditor v2", layout="centered")
+st.set_page_config(page_title="Travel Auditor v3", layout="centered")
 
 @st.cache_resource
 def connect_db():
     try:
-        # SecretsまたはローカルJSONから接続
         if "gcp_service_account" in st.secrets:
             creds_dict = st.secrets["gcp_service_account"]
             creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, SCOPE)
@@ -41,7 +40,6 @@ def load_data(worksheet):
 
 def add_trip(name, start, end, budget):
     t_id = str(uuid.uuid4())[:8]
-    # 列順序: trip_id, trip_name, start_date, end_date, status, total_budget
     new_row = [t_id, name, str(start), str(end), "Active", budget]
     worksheet_trips.append_row(new_row)
     st.toast(f"プロジェクト '{name}' を開始しました。")
@@ -51,37 +49,83 @@ def add_trip(name, start, end, budget):
 def add_expense(trip_id, category, item, amount, sat, detail):
     e_id = str(uuid.uuid4())
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # 列順序: entry_id, trip_id, timestamp, category, item_name, amount, satisfaction, detail
+    # 正しい列順序: entry_id, trip_id, timestamp, category, item_name, amount, satisfaction, detail
     new_row = [e_id, trip_id, ts, category, item, amount, sat, detail]
     worksheet_expenses.append_row(new_row)
     st.toast("支出を監査ログに記録しました。")
     time.sleep(1)
     st.rerun()
 
-def delete_row(worksheet, id_col_val, id_col_index=1):
+def delete_row_simple(worksheet, id_col_val, id_col_index=1):
+    """単一行削除（汎用版）"""
     try:
         cell = worksheet.find(id_col_val, in_column=id_col_index)
-        
-        # バージョン互換性対応: delete_rows がなければ delete_row を試す
+        # バージョン互換対応
         if hasattr(worksheet, 'delete_rows'):
             worksheet.delete_rows(cell.row)
         else:
-            worksheet.delete_row(cell.row) # 古いバージョン用
-            
+            worksheet.delete_row(cell.row)
         st.success("削除完了")
         time.sleep(1)
         st.rerun()
-    except gspread.exceptions.CellNotFound:
-        st.error("指定されたIDのデータが見つかりませんでした。")
     except Exception as e:
-        st.error(f"削除エラー: {e}")
+        # エラーの種類を問わずキャッチして表示
+        st.error(f"削除エラー (IDが見つからない等の可能性があります): {e}")
+
+def delete_trip_cascade(trip_id, trip_name):
+    """旅行とそれに紐づく全支出データを一括削除（完全消去）"""
+    status_box = st.empty()
+    status_box.info("⚠️ 関連データの削除処理を開始します...")
+
+    try:
+        # 1. 支出データの一括削除（再構築方式）
+        # 全データを読み込み、削除対象以外をメモリに残して書き戻す（API呼び出し回数節約のため）
+        all_expenses = worksheet_expenses.get_all_records()
+        if all_expenses:
+            df = pd.DataFrame(all_expenses)
+            
+            # 削除対象のtrip_idを除外
+            if 'trip_id' in df.columns:
+                remaining_df = df[df['trip_id'] != trip_id]
+                
+                # シートをクリアして書き直し
+                worksheet_expenses.clear()
+                
+                # ヘッダー再配置
+                header = ["entry_id", "trip_id", "timestamp", "category", "item_name", "amount", "satisfaction", "detail"]
+                worksheet_expenses.append_row(header)
+                
+                # データがある場合のみ書き込み
+                if not remaining_df.empty:
+                    # カラム順序をヘッダーに合わせる
+                    # 欠損カラムがある場合のガード
+                    for col in header:
+                        if col not in remaining_df.columns:
+                            remaining_df[col] = ""
+                            
+                    data_to_write = remaining_df[header].values.tolist()
+                    worksheet_expenses.append_rows(data_to_write)
+        
+        # 2. 旅行管理データの削除
+        cell = worksheet_trips.find(trip_id, in_column=1)
+        if hasattr(worksheet_trips, 'delete_rows'):
+            worksheet_trips.delete_rows(cell.row)
+        else:
+            worksheet_trips.delete_row(cell.row)
+            
+        status_box.success(f"旅行「{trip_name}」と全関連データの完全消去が完了しました。")
+        time.sleep(2)
+        st.rerun()
+
+    except Exception as e:
+        st.error(f"完全削除中にエラーが発生しました: {e}")
 
 def update_trip_status(trip_id, new_status):
     try:
-        cell = worksheet_trips.find(trip_id, in_column=1) # A列(trip_id)を検索
-        # statusはE列(5番目)にあると仮定
+        cell = worksheet_trips.find(trip_id, in_column=1)
+        # statusはE列(5番目)
         worksheet_trips.update_cell(cell.row, 5, new_status)
-        st.toast(f"ステータスを {new_status} に更新しました。")
+        st.toast(f"ステータス更新: {new_status}")
         time.sleep(1)
         st.rerun()
     except Exception as e:
@@ -89,25 +133,21 @@ def update_trip_status(trip_id, new_status):
 
 # --- 3. UI構築 ---
 
-st.title("🛡️ Travel Audit v2")
+st.title("🛡️ Travel Audit v3")
 
-# メニュー構成
 menu = ["支出記録 (Entry)", "台帳閲覧 (Audit)", "管理・修正 (Admin)"]
 choice = st.sidebar.radio("Menu", menu)
 
-# --- A. 支出記録 (Entry) ---
+# --- A. 支出記録 ---
 if choice == "支出記録 (Entry)":
     st.header("支出データの入力")
-    
     df_trips = load_data(worksheet_trips)
     if df_trips.empty:
-        st.warning("有効な旅行プロジェクトがありません。「管理・修正」から作成してください。")
+        st.warning("旅行プロジェクトがありません。")
     else:
-        # Activeな旅行のみフィルタリング
         active_trips = df_trips[df_trips['status'] == 'Active']
-        
         if active_trips.empty:
-            st.warning("現在進行中(Active)の旅行がありません。")
+            st.warning("進行中(Active)の旅行がありません。")
         else:
             trip_options = active_trips.set_index('trip_id')['trip_name'].to_dict()
             selected_trip_id = st.selectbox("対象旅行", list(trip_options.keys()), format_func=lambda x: trip_options[x])
@@ -128,11 +168,11 @@ if choice == "支出記録 (Entry)":
                     else:
                         st.error("入力不備があります。")
 
-# --- B. 台帳閲覧 (Audit) ---
+# --- B. 台帳閲覧 ---
 elif choice == "台帳閲覧 (Audit)":
     st.header("データ監査・分析")
-    
     df_trips = load_data(worksheet_trips)
+    
     if not df_trips.empty:
         trip_options = df_trips.set_index('trip_id')['trip_name'].to_dict()
         filter_opts = ["ALL"] + list(trip_options.keys())
@@ -140,43 +180,38 @@ elif choice == "台帳閲覧 (Audit)":
         
         df_ex = load_data(worksheet_expenses)
         if not df_ex.empty:
-            # フィルタリング
             if target_trip != "ALL":
                 df_ex = df_ex[df_ex['trip_id'] == target_trip]
-                # 予算情報の表示
-                budget = df_trips[df_trips['trip_id'] == target_trip]['total_budget'].iloc[0]
-                status = df_trips[df_trips['trip_id'] == target_trip]['status'].iloc[0]
-                
-                total_spent = df_ex['amount'].sum()
-                if budget:
-                    remaining = int(budget) - total_spent
-                    prog = min(total_spent / int(budget), 1.0)
-                    st.progress(prog, text=f"予算消化率: {int(prog*100)}%")
-                    st.caption(f"予算: ¥{budget:,} | 支出: ¥{total_spent:,} | 残金: ¥{remaining:,} | Status: {status}")
-            
-            # データ表示
+                # 予算表示
+                if 'total_budget' in df_trips.columns:
+                    budget = df_trips[df_trips['trip_id'] == target_trip]['total_budget'].iloc[0]
+                    status = df_trips[df_trips['trip_id'] == target_trip]['status'].iloc[0]
+                    total_spent = df_ex['amount'].sum()
+                    if budget:
+                        prog = min(total_spent / int(budget), 1.0)
+                        st.progress(prog, text=f"予算消化率: {int(prog*100)}%")
+                        st.caption(f"予算: ¥{budget:,} | 支出: ¥{total_spent:,} | Status: {status}")
+
             display_cols = ['timestamp', 'category', 'item_name', 'amount', 'satisfaction', 'detail', 'entry_id']
-            # 不要な列が含まれている場合のガード
-            display_cols = [c for c in display_cols if c in df_ex.columns]
+            # ガード: 実際に存在するカラムだけを表示
+            valid_cols = [c for c in display_cols if c in df_ex.columns]
             
             st.dataframe(
-                df_ex[display_cols].sort_values(by='timestamp', ascending=False),
+                df_ex[valid_cols].sort_values(by='timestamp', ascending=False),
                 use_container_width=True,
                 hide_index=True
             )
         else:
             st.info("支出データなし")
 
-# --- C. 管理・修正 (Admin) ---
+# --- C. 管理・修正 ---
 elif choice == "管理・修正 (Admin)":
     st.header("プロジェクト管理センター")
     
     tab1, tab2, tab3 = st.tabs(["新規旅行登録", "ステータス変更", "データ削除"])
     
-    # 1. 新規登録
     with tab1:
         with st.form("new_trip_form"):
-            st.subheader("新規プロジェクト")
             t_name = st.text_input("旅行名")
             t_budget = st.number_input("総予算 (JPY)", min_value=0, step=10000)
             c1, c2 = st.columns(2)
@@ -185,65 +220,44 @@ elif choice == "管理・修正 (Admin)":
             if st.form_submit_button("登録"):
                 add_trip(t_name, t_start, t_end, t_budget)
 
-    # 2. ステータス変更
     with tab2:
-        st.subheader("旅行ステータス管理")
         df_trips = load_data(worksheet_trips)
         if not df_trips.empty:
             t_dict = df_trips.set_index('trip_id')[['trip_name', 'status']].T.to_dict()
-            target_t_id = st.selectbox("旅行を選択", list(t_dict.keys()), format_func=lambda x: f"{t_dict[x]['trip_name']} ({t_dict[x]['status']})")
-            
-            new_status = st.radio("状態変更", ["Active", "Completed", "Cancelled"], horizontal=True)
-            if st.button("ステータス更新"):
+            target_t_id = st.selectbox("旅行", list(t_dict.keys()), format_func=lambda x: f"{t_dict[x]['trip_name']} ({t_dict[x]['status']})")
+            new_status = st.radio("状態", ["Active", "Completed", "Cancelled"], horizontal=True)
+            if st.button("更新実行"):
                 update_trip_status(target_t_id, new_status)
 
-# 3. 削除機能
     with tab3:
         st.subheader("危険区域: データ削除")
-        st.warning("削除されたデータは復元できません。慎重に操作してください。")
-        
         del_type = st.radio("削除対象", ["支出データ (1件)", "旅行プロジェクト (全体)"], horizontal=True)
         
-        # --- A. 支出データ削除 ---
         if del_type == "支出データ (1件)":
-            expense_id = st.text_input("削除する entry_id を入力")
-            st.caption("※台帳閲覧タブで entry_id を確認し、コピーしてください")
-            
+            expense_id = st.text_input("削除する entry_id")
             if st.button("支出削除実行"):
                 if expense_id:
-                    delete_row(worksheet_expenses, expense_id, id_col_index=1)
-                else:
-                    st.error("IDを入力してください。")
+                    delete_row_simple(worksheet_expenses, expense_id, id_col_index=1)
                 
-        # --- B. 旅行プロジェクト削除 (確認機能付き) ---
         elif del_type == "旅行プロジェクト (全体)":
             df_trips = load_data(worksheet_trips)
-            
             if not df_trips.empty:
-                # 選択肢の作成
                 t_dict = df_trips.set_index('trip_id')['trip_name'].to_dict()
-                del_trip_id = st.selectbox(
-                    "削除する旅行を選択", 
-                    list(t_dict.keys()), 
-                    format_func=lambda x: t_dict[x]
-                )
-                
+                del_trip_id = st.selectbox("削除する旅行", list(t_dict.keys()), format_func=lambda x: t_dict[x])
                 target_name = t_dict[del_trip_id]
                 
                 st.markdown(f"""
-                <div style="background-color: #3f0e0e; padding: 10px; border-radius: 5px; border: 1px solid #ff4b4b;">
-                    <strong>⚠️ 警告:</strong> 旅行「{target_name}」を削除しようとしています。<br>
-                    紐付くすべてのデータへのアクセスが失われる可能性があります。
+                <div style="background-color: #3f0e0e; color: #ffcccc; padding: 10px; border-radius: 5px; border: 1px solid #ff4b4b; margin-bottom: 10px;">
+                    <strong>⚠️ 警告:</strong> 旅行「{target_name}」および<strong>紐付く全ての支出データ</strong>を削除します。<br>
+                    この操作は取り消せません。
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # 安全装置: 名前入力確認
-                confirm_name = st.text_input(f"確認のため、旅行名「{target_name}」を正確に入力してください")
+                confirm_name = st.text_input(f"確認のため「{target_name}」と入力してください")
                 
-                if st.button("プロジェクト完全削除"):
+                if st.button("プロジェクト完全抹消"):
                     if confirm_name == target_name:
-                        delete_row(worksheet_trips, del_trip_id, id_col_index=1)
+                        # 新しいカスケード削除関数を呼び出し
+                        delete_trip_cascade(del_trip_id, target_name)
                     else:
-                        st.error(f"旅行名が一致しません。削除を中止しました。")
-            else:
-                st.info("削除可能な旅行プロジェクトがありません。")
+                        st.error("名前が一致しません。")
