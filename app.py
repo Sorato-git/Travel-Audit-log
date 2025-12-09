@@ -461,3 +461,4 @@ elif choice == "管理・修正 (Admin)":
                 if st.button("プロジェクト完全抹消"):
                     if confirm_name == target_name: delete_trip_cascade(del_trip_id, target_name)
                     else: st.error("名前不一致")
+
