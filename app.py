@@ -378,7 +378,7 @@ elif choice == "管理・修正 (Admin)":
         df_ex = load_data(worksheet_expenses)
         if not df_trips.empty and not df_ex.empty:
             t_dict = df_trips.set_index('trip_id')['trip_name'].to_dict()
-            sel_t_id = st.selectbox("修正対象の旅行", list(t_dict.keys()), format_func=lambda x: t_dict[x], key="edit_trip_sel")
+            sel_t_id = st.selectbox("修正対象の旅行", list(t_dict.keys()), format_func=lambda x: str(t_dict[x]), key="edit_trip_sel")
             trip_expenses = df_ex[df_ex['trip_id'] == sel_t_id].copy()
             
             if not trip_expenses.empty:
@@ -454,12 +454,13 @@ elif choice == "管理・修正 (Admin)":
             df_trips = load_data(worksheet_trips)
             if not df_trips.empty:
                 t_dict = df_trips.set_index('trip_id')['trip_name'].to_dict()
-                del_trip_id = st.selectbox("削除する旅行", list(t_dict.keys()), format_func=lambda x: t_dict[x], key="del_trip_sel")
+                del_trip_id = st.selectbox("削除する旅行", list(t_dict.keys()), format_func=lambda x: str(t_dict[x]), key="del_trip_sel")
                 target_name = t_dict[del_trip_id]
                 st.warning(f"警告: 「{target_name}」を削除します。")
                 confirm_name = st.text_input(f"確認のため「{target_name}」と入力してください")
                 if st.button("プロジェクト完全抹消"):
                     if confirm_name == target_name: delete_trip_cascade(del_trip_id, target_name)
                     else: st.error("名前不一致")
+
 
 
