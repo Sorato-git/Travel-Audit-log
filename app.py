@@ -14,8 +14,8 @@ SPREADSHEET_NAME = "TravelAuditDB"
 
 # カラーパレット
 COLOR_RED = "#FF4B4B"
-COLOR_GREEN = "#4BFF4B"
 COLOR_BLUE = "#4B4BFF"
+COLOR_GREEN = "#4BFF4B"
 COLOR_GOLD = "#FFD700"
 COLOR_CYAN = "#00FFFF"
 COLOR_MAGENTA = "#FF00FF"
@@ -116,6 +116,7 @@ def delete_trip_cascade(trip_id, trip_name):
                 header = ["entry_id", "trip_id", "timestamp", "category", "item_name", "amount", "satisfaction", "detail", "expense_date"]
                 worksheet_expenses.append_row(header)
                 if not remaining_df.empty:
+                    # カラム不足時の補完
                     for col in header:
                         if col not in remaining_df.columns:
                             remaining_df[col] = ""
@@ -146,7 +147,7 @@ def update_trip_status(trip_id, new_status):
 
 # --- 3. UI構築 ---
 
-st.title("🛡️ Travel Audit Log")
+st.title("Travel Audit Log") # v表記なし
 
 menu = ["支出記録 (Entry)", "台帳閲覧 (Audit)", "管理・修正 (Admin)"]
 choice = st.sidebar.radio("Menu", menu)
@@ -205,8 +206,7 @@ elif choice == "台帳閲覧 (Audit)":
             
             # 空文字の行を timestamp の日付で埋める
             for idx, row in df_ex.iterrows():
-                if not str(row['expense_date']).strip():
-                    # timestamp列があると仮定
+                if str(row['expense_date']).strip() == "":
                     ts_val = str(row.get('timestamp', ''))
                     if ts_val:
                         try:
@@ -221,44 +221,48 @@ elif choice == "台帳閲覧 (Audit)":
                 st.markdown("### 📊 支出分析")
                 
                 budget_row = df_trips[df_trips['trip_id'] == target_trip]
-                budget = int(budget_row['total_budget'].iloc[0]) if not budget_row.empty and budget_row['total_budget'].iloc[0] else 1 # 0除算回避
+                budget_val = budget_row['total_budget'].iloc[0]
+                budget = int(budget_val) if not budget_row.empty and budget_val else 1
                 total_spent = int(df_ex['amount'].sum())
                 
                 col_g1, col_g2 = st.columns(2)
                 
-                # 1. 予算消化バー (画像イメージ再現)
+                # 1. 予算消化バー (巨大文字 & 色変化)
                 with col_g1:
-                    ratio = min(total_spent / budget, 1.0)
-                    pct_text = f"{int((total_spent / budget) * 100)}%"
+                    ratio = (total_spent / budget) * 100
+                    # 予算オーバーなら赤、以内なら青
                     bar_color = COLOR_RED if total_spent > budget else COLOR_BLUE
                     
                     fig_budget = go.Figure()
                     
-                    # 背景バー (全幅) - オプションだがシンプルに単一バーで表現
                     fig_budget.add_trace(go.Bar(
-                        y=[''],
                         x=[total_spent],
+                        y=[""],
                         orientation='h',
                         marker=dict(color=bar_color),
-                        text=pct_text,
-                        textposition='auto', # 自動配置 (バーの中央または外)
-                        hoverinfo='x'
+                        text=[f"{int(ratio)}%"], # パーセント表示
+                        textposition='inside',   # バーの内側に表示
+                        insidetextanchor='middle', # 中央揃え
+                        textfont=dict(size=60, color='white', family="Arial Black") # 巨大フォント
                     ))
                     
-                    # 軸設定 (予算を最大値にする、超過したら自動拡張)
-                    max_x = max(budget, total_spent) * 1.1
+                    # 軸設定 (予算を超えたら自動拡張、そうでなければ予算まで)
+                    max_x = max(budget, total_spent) * 1.05
+                    
                     fig_budget.update_layout(
                         title="予算消化状況",
                         xaxis=dict(
                             range=[0, max_x], 
-                            title=f"{total_spent:,}円 / {budget:,}円"
+                            title=f"{total_spent:,}円 / {budget:,}円", # X軸タイトルに金額
+                            tickfont=dict(size=14),
+                            title_font=dict(size=18)
                         ),
                         yaxis=dict(showticklabels=False),
                         height=200,
-                        margin=dict(l=20, r=20, t=30, b=30)
+                        margin=dict(l=20, r=20, t=40, b=40)
                     )
-                    # 予算ライン
-                    fig_budget.add_vline(x=budget, line_width=2, line_dash="dash", line_color="white", annotation_text="Budget")
+                    # 予算ライン (点線)
+                    fig_budget.add_vline(x=budget, line_width=3, line_dash="dash", line_color="white", annotation_text="Budget")
                     
                     st.plotly_chart(fig_budget, use_container_width=True)
 
@@ -276,21 +280,21 @@ elif choice == "台帳閲覧 (Audit)":
                         fig_cat = px.pie(
                             cat_sum, 
                             values='amount', 
-                            names='label', # 加工したラベルを使用
+                            names='label', # 加工したラベルを使用(凡例用)
                             hole=0.6,
                             color_discrete_sequence=custom_colors
                         )
                         
-                        # 中央に合計金額
+                        # 中央に合計金額、テキスト非表示
+                        fig_cat.update_traces(textinfo='none')
                         fig_cat.update_layout(
                             title="カテゴリ別内訳",
-                            annotations=[dict(text=f"¥{total_spent:,}", x=0.5, y=0.5, font_size=20, showarrow=False)],
+                            annotations=[dict(text=f"¥{total_spent:,}", x=0.5, y=0.5, font_size=24, showarrow=False, font_weight="bold")],
                             height=250,
-                            margin=dict(l=20, r=20, t=30, b=30),
-                            showlegend=True
+                            margin=dict(l=20, r=20, t=40, b=20),
+                            showlegend=True,
+                            legend=dict(font=dict(size=14))
                         )
-                        # チャート上のテキストは邪魔なので消す(凡例にあるため)
-                        fig_cat.update_traces(textinfo='none')
                         
                         st.plotly_chart(fig_cat, use_container_width=True)
                     else:
@@ -299,9 +303,10 @@ elif choice == "台帳閲覧 (Audit)":
             # --- 明細リスト ---
             st.markdown("### 📝 支出明細 (日付順)")
             display_cols = ['expense_date', 'category', 'item_name', 'amount', 'satisfaction', 'detail', 'entry_id']
+            # カラム存在確認
             valid_cols = [c for c in display_cols if c in df_ex.columns]
             
-            # expense_date でソート
+            # expense_date でソートして表示
             st.dataframe(
                 df_ex[valid_cols].sort_values(by='expense_date', ascending=False),
                 use_container_width=True,
@@ -338,7 +343,7 @@ elif choice == "管理・修正 (Admin)":
             trip_expenses = df_ex[df_ex['trip_id'] == sel_t_id].copy()
             
             if not trip_expenses.empty:
-                # expense_dateが無い場合のフォールバック
+                # expense_date列確保
                 if 'expense_date' not in trip_expenses.columns:
                      trip_expenses['expense_date'] = trip_expenses['timestamp'].astype(str).str.split(" ").str[0]
                 
@@ -351,7 +356,7 @@ elif choice == "管理・修正 (Admin)":
                 
                 st.markdown("---")
                 with st.form("edit_form"):
-                    # 日付の復元（文字列 -> date型）
+                    # 日付復元
                     try:
                         curr_date = datetime.strptime(str(target_row['expense_date']), "%Y-%m-%d").date()
                     except:
@@ -382,7 +387,7 @@ elif choice == "管理・修正 (Admin)":
             t_dict = df_trips.set_index('trip_id')[['trip_name', 'status']].T.to_dict()
             target_t_id = st.selectbox("旅行", list(t_dict.keys()), format_func=lambda x: f"{t_dict[x]['trip_name']} ({t_dict[x]['status']})", key="status_sel")
             
-            # Planning を追加
+            # Planning追加
             new_status = st.radio("状態変更", ["Planning", "Active", "Completed", "Cancelled"], horizontal=True)
             if st.button("更新実行"):
                 update_trip_status(target_t_id, new_status)
