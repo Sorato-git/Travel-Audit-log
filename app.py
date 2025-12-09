@@ -5,12 +5,19 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import uuid
 import time
+import plotly.graph_objects as go
+import plotly.express as px
 
 # --- 1. 設定 & 接続 ---
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 SPREADSHEET_NAME = "TravelAuditDB"
 
-st.set_page_config(page_title="Travel Auditor v3", layout="centered")
+# カラーパレット定義
+COLOR_RED = "#FF4B4B"
+COLOR_GREEN = "#4BFF4B"
+COLOR_BLUE = "#4B4BFF"
+
+st.set_page_config(page_title="Travel Auditor v4", layout="wide") # グラフ用にWideモード推奨
 
 @st.cache_resource
 def connect_db():
@@ -49,18 +56,37 @@ def add_trip(name, start, end, budget):
 def add_expense(trip_id, category, item, amount, sat, detail):
     e_id = str(uuid.uuid4())
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # 正しい列順序: entry_id, trip_id, timestamp, category, item_name, amount, satisfaction, detail
     new_row = [e_id, trip_id, ts, category, item, amount, sat, detail]
     worksheet_expenses.append_row(new_row)
     st.toast("支出を監査ログに記録しました。")
     time.sleep(1)
     st.rerun()
 
+def update_expense(entry_id, category, item, amount, sat, detail):
+    """既存の支出データを特定して上書き更新する"""
+    try:
+        # entry_id で行を検索 (A列=1列目と仮定)
+        cell = worksheet_expenses.find(entry_id, in_column=1)
+        row_num = cell.row
+        
+        # 列順序: entry_id(1), trip_id(2), timestamp(3), category(4), item_name(5), amount(6), satisfaction(7), detail(8)
+        # 一括更新はできないのでセルごとに更新（または範囲更新）
+        # 安全のためセル単位で更新
+        worksheet_expenses.update_cell(row_num, 4, category)
+        worksheet_expenses.update_cell(row_num, 5, item)
+        worksheet_expenses.update_cell(row_num, 6, amount)
+        worksheet_expenses.update_cell(row_num, 7, sat)
+        worksheet_expenses.update_cell(row_num, 8, detail)
+        
+        st.success("データの修正が完了しました。")
+        time.sleep(1)
+        st.rerun()
+    except Exception as e:
+        st.error(f"更新エラー: {e}")
+
 def delete_row_simple(worksheet, id_col_val, id_col_index=1):
-    """単一行削除（汎用版）"""
     try:
         cell = worksheet.find(id_col_val, in_column=id_col_index)
-        # バージョン互換対応
         if hasattr(worksheet, 'delete_rows'):
             worksheet.delete_rows(cell.row)
         else:
@@ -69,44 +95,27 @@ def delete_row_simple(worksheet, id_col_val, id_col_index=1):
         time.sleep(1)
         st.rerun()
     except Exception as e:
-        # エラーの種類を問わずキャッチして表示
-        st.error(f"削除エラー (IDが見つからない等の可能性があります): {e}")
+        st.error(f"削除エラー: {e}")
 
 def delete_trip_cascade(trip_id, trip_name):
-    """旅行とそれに紐づく全支出データを一括削除（完全消去）"""
     status_box = st.empty()
     status_box.info("⚠️ 関連データの削除処理を開始します...")
-
     try:
-        # 1. 支出データの一括削除（再構築方式）
-        # 全データを読み込み、削除対象以外をメモリに残して書き戻す（API呼び出し回数節約のため）
         all_expenses = worksheet_expenses.get_all_records()
         if all_expenses:
             df = pd.DataFrame(all_expenses)
-            
-            # 削除対象のtrip_idを除外
             if 'trip_id' in df.columns:
                 remaining_df = df[df['trip_id'] != trip_id]
-                
-                # シートをクリアして書き直し
                 worksheet_expenses.clear()
-                
-                # ヘッダー再配置
                 header = ["entry_id", "trip_id", "timestamp", "category", "item_name", "amount", "satisfaction", "detail"]
                 worksheet_expenses.append_row(header)
-                
-                # データがある場合のみ書き込み
                 if not remaining_df.empty:
-                    # カラム順序をヘッダーに合わせる
-                    # 欠損カラムがある場合のガード
                     for col in header:
                         if col not in remaining_df.columns:
                             remaining_df[col] = ""
-                            
                     data_to_write = remaining_df[header].values.tolist()
                     worksheet_expenses.append_rows(data_to_write)
         
-        # 2. 旅行管理データの削除
         cell = worksheet_trips.find(trip_id, in_column=1)
         if hasattr(worksheet_trips, 'delete_rows'):
             worksheet_trips.delete_rows(cell.row)
@@ -116,14 +125,12 @@ def delete_trip_cascade(trip_id, trip_name):
         status_box.success(f"旅行「{trip_name}」と全関連データの完全消去が完了しました。")
         time.sleep(2)
         st.rerun()
-
     except Exception as e:
         st.error(f"完全削除中にエラーが発生しました: {e}")
 
 def update_trip_status(trip_id, new_status):
     try:
         cell = worksheet_trips.find(trip_id, in_column=1)
-        # statusはE列(5番目)
         worksheet_trips.update_cell(cell.row, 5, new_status)
         st.toast(f"ステータス更新: {new_status}")
         time.sleep(1)
@@ -133,7 +140,7 @@ def update_trip_status(trip_id, new_status):
 
 # --- 3. UI構築 ---
 
-st.title("🛡️ Travel Audit v3")
+st.title("🛡️ Travel Audit v4")
 
 menu = ["支出記録 (Entry)", "台帳閲覧 (Audit)", "管理・修正 (Admin)"]
 choice = st.sidebar.radio("Menu", menu)
@@ -174,26 +181,78 @@ elif choice == "台帳閲覧 (Audit)":
     df_trips = load_data(worksheet_trips)
     
     if not df_trips.empty:
+        # フィルタリング
         trip_options = df_trips.set_index('trip_id')['trip_name'].to_dict()
         filter_opts = ["ALL"] + list(trip_options.keys())
         target_trip = st.selectbox("フィルタ", filter_opts, format_func=lambda x: trip_options.get(x, "全プロジェクト"))
         
         df_ex = load_data(worksheet_expenses)
+        
         if not df_ex.empty:
             if target_trip != "ALL":
                 df_ex = df_ex[df_ex['trip_id'] == target_trip]
-                # 予算表示
-                if 'total_budget' in df_trips.columns:
-                    budget = df_trips[df_trips['trip_id'] == target_trip]['total_budget'].iloc[0]
-                    status = df_trips[df_trips['trip_id'] == target_trip]['status'].iloc[0]
-                    total_spent = df_ex['amount'].sum()
-                    if budget:
-                        prog = min(total_spent / int(budget), 1.0)
-                        st.progress(prog, text=f"予算消化率: {int(prog*100)}%")
-                        st.caption(f"予算: ¥{budget:,} | 支出: ¥{total_spent:,} | Status: {status}")
+                
+                # --- グラフエリア (Plotly) ---
+                st.markdown("### 📊 支出分析")
+                
+                # データ準備
+                budget_row = df_trips[df_trips['trip_id'] == target_trip]
+                budget = int(budget_row['total_budget'].iloc[0]) if not budget_row.empty and budget_row['total_budget'].iloc[0] else 0
+                total_spent = int(df_ex['amount'].sum())
+                
+                col_g1, col_g2 = st.columns(2)
+                
+                # 1. 予算対比棒グラフ
+                with col_g1:
+                    # バーの色決定: 予算内なら青、超過なら赤
+                    bar_color = COLOR_BLUE if total_spent <= budget else COLOR_RED
+                    
+                    fig_budget = go.Figure()
+                    fig_budget.add_trace(go.Bar(
+                        y=['支出'],
+                        x=[total_spent],
+                        orientation='h',
+                        marker=dict(color=bar_color),
+                        name='支出実績'
+                    ))
+                    # 予算ライン
+                    fig_budget.add_vline(x=budget, line_width=3, line_dash="dash", line_color=COLOR_GREEN, annotation_text="Budget")
+                    
+                    fig_budget.update_layout(
+                        title=f"予算消化状況 (予算: ¥{budget:,})",
+                        xaxis_title="金額 (JPY)",
+                        height=250,
+                        margin=dict(l=20, r=20, t=40, b=20)
+                    )
+                    st.plotly_chart(fig_budget, use_container_width=True)
 
+                # 2. カテゴリ別ドーナツグラフ
+                with col_g2:
+                    if total_spent > 0:
+                        cat_sum = df_ex.groupby('category')['amount'].sum().reset_index()
+                        
+                        # カスタムカラーシーケンス
+                        custom_colors = [COLOR_BLUE, COLOR_GREEN, "#FFD700", "#FF00FF", "#00FFFF"]
+                        
+                        fig_cat = px.pie(
+                            cat_sum, 
+                            values='amount', 
+                            names='category', 
+                            hole=0.4,
+                            color_discrete_sequence=custom_colors
+                        )
+                        fig_cat.update_layout(
+                            title="カテゴリ別支出構成",
+                            height=250,
+                            margin=dict(l=20, r=20, t=40, b=20)
+                        )
+                        st.plotly_chart(fig_cat, use_container_width=True)
+                    else:
+                        st.info("データ不足のためグラフを表示できません")
+
+            # --- 明細リスト表示 ---
+            st.markdown("### 📝 支出明細")
             display_cols = ['timestamp', 'category', 'item_name', 'amount', 'satisfaction', 'detail', 'entry_id']
-            # ガード: 実際に存在するカラムだけを表示
             valid_cols = [c for c in display_cols if c in df_ex.columns]
             
             st.dataframe(
@@ -208,8 +267,9 @@ elif choice == "台帳閲覧 (Audit)":
 elif choice == "管理・修正 (Admin)":
     st.header("プロジェクト管理センター")
     
-    tab1, tab2, tab3 = st.tabs(["新規旅行登録", "ステータス変更", "データ削除"])
+    tab1, tab2, tab3, tab4 = st.tabs(["新規旅行登録", "データ修正(Edit)", "ステータス変更", "データ削除"])
     
+    # 1. 新規登録
     with tab1:
         with st.form("new_trip_form"):
             t_name = st.text_input("旅行名")
@@ -220,21 +280,66 @@ elif choice == "管理・修正 (Admin)":
             if st.form_submit_button("登録"):
                 add_trip(t_name, t_start, t_end, t_budget)
 
+    # 2. データ修正 (New!)
     with tab2:
+        st.subheader("既存データの修正")
+        df_trips = load_data(worksheet_trips)
+        df_ex = load_data(worksheet_expenses)
+        
+        if not df_trips.empty and not df_ex.empty:
+            # 旅行選択
+            t_dict = df_trips.set_index('trip_id')['trip_name'].to_dict()
+            sel_t_id = st.selectbox("修正対象の旅行", list(t_dict.keys()), format_func=lambda x: t_dict[x], key="edit_trip_sel")
+            
+            # その旅行の支出のみ抽出
+            trip_expenses = df_ex[df_ex['trip_id'] == sel_t_id]
+            
+            if not trip_expenses.empty:
+                # 選択肢作成: "日付 - 店名 (金額)"
+                trip_expenses['label'] = trip_expenses['timestamp'].astype(str) + " - " + trip_expenses['item_name'] + " (¥" + trip_expenses['amount'].astype(str) + ")"
+                exp_dict = trip_expenses.set_index('entry_id')['label'].to_dict()
+                
+                sel_exp_id = st.selectbox("修正する項目を選択", list(exp_dict.keys()), format_func=lambda x: exp_dict[x])
+                
+                # 選択されたデータの現況を取得
+                target_row = trip_expenses[trip_expenses['entry_id'] == sel_exp_id].iloc[0]
+                
+                st.markdown("---")
+                with st.form("edit_form"):
+                    new_item = st.text_input("品目・店名", value=target_row['item_name'])
+                    c1, c2 = st.columns(2)
+                    new_amount = c1.number_input("金額", min_value=0, value=int(target_row['amount']), step=100)
+                    new_cat = c2.selectbox("カテゴリ", ["食事", "宿泊", "交通", "娯楽/体験", "雑費"], index=["食事", "宿泊", "交通", "娯楽/体験", "雑費"].index(target_row['category']) if target_row['category'] in ["食事", "宿泊", "交通", "娯楽/体験", "雑費"] else 0)
+                    
+                    st.caption("満足度再評価")
+                    new_sat = st.slider("満足度", 1, 10, int(target_row['satisfaction']))
+                    new_detail = st.text_area("詳細", value=target_row['detail'])
+                    
+                    if st.form_submit_button("修正内容を保存"):
+                        update_expense(sel_exp_id, new_cat, new_item, new_amount, new_sat, new_detail)
+            else:
+                st.info("修正可能なデータがありません。")
+        else:
+            st.info("データがありません。")
+
+    # 3. ステータス変更
+    with tab3:
         df_trips = load_data(worksheet_trips)
         if not df_trips.empty:
             t_dict = df_trips.set_index('trip_id')[['trip_name', 'status']].T.to_dict()
-            target_t_id = st.selectbox("旅行", list(t_dict.keys()), format_func=lambda x: f"{t_dict[x]['trip_name']} ({t_dict[x]['status']})")
+            target_t_id = st.selectbox("旅行", list(t_dict.keys()), format_func=lambda x: f"{t_dict[x]['trip_name']} ({t_dict[x]['status']})", key="status_sel")
             new_status = st.radio("状態", ["Active", "Completed", "Cancelled"], horizontal=True)
             if st.button("更新実行"):
                 update_trip_status(target_t_id, new_status)
 
-    with tab3:
+    # 4. データ削除
+    with tab4:
         st.subheader("危険区域: データ削除")
         del_type = st.radio("削除対象", ["支出データ (1件)", "旅行プロジェクト (全体)"], horizontal=True)
         
         if del_type == "支出データ (1件)":
             expense_id = st.text_input("削除する entry_id")
+            st.caption("※台帳閲覧タブで entry_id を確認してください")
             if st.button("支出削除実行"):
                 if expense_id:
                     delete_row_simple(worksheet_expenses, expense_id, id_col_index=1)
@@ -243,7 +348,7 @@ elif choice == "管理・修正 (Admin)":
             df_trips = load_data(worksheet_trips)
             if not df_trips.empty:
                 t_dict = df_trips.set_index('trip_id')['trip_name'].to_dict()
-                del_trip_id = st.selectbox("削除する旅行", list(t_dict.keys()), format_func=lambda x: t_dict[x])
+                del_trip_id = st.selectbox("削除する旅行", list(t_dict.keys()), format_func=lambda x: t_dict[x], key="del_trip_sel")
                 target_name = t_dict[del_trip_id]
                 
                 st.markdown(f"""
@@ -257,7 +362,6 @@ elif choice == "管理・修正 (Admin)":
                 
                 if st.button("プロジェクト完全抹消"):
                     if confirm_name == target_name:
-                        # 新しいカスケード削除関数を呼び出し
                         delete_trip_cascade(del_trip_id, target_name)
                     else:
                         st.error("名前が一致しません。")
