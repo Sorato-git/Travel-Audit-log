@@ -17,7 +17,7 @@ COLOR_RED = "#FF4B4B"
 COLOR_BLUE = "#4B4BFF"
 COLOR_GREEN = "#4BFF4B"
 COLOR_GOLD = "#FFD700"
-COLOR_CYAN = "#00FFFF"
+COLOR_CYAN = "#008B8B"
 COLOR_MAGENTA = "#FF00FF"
 
 st.set_page_config(page_title="Travel Audit Log", layout="wide")
@@ -174,7 +174,7 @@ if choice == "支出記録 (Entry)":
                 
                 item = st.text_input("品目・店名")
                 col1, col2 = st.columns(2)
-                amount = col1.number_input("金額 (JPY)", min_value=0, step=100)
+                amount = col1.number_input("金額 ", min_value=0, step=100)
                 category = col2.selectbox("カテゴリ", ["食事", "宿泊", "交通", "娯楽/体験", "雑費"])
                 
                 st.markdown("---")
@@ -275,7 +275,7 @@ elif choice == "台帳閲覧 (Audit)":
                         cat_sum['percent'] = (cat_sum['amount'] / total_spent) * 100
                         cat_sum['label'] = cat_sum.apply(lambda x: f"{x['category']} ({x['percent']:.1f}%)", axis=1)
                         
-                        custom_colors = [COLOR_BLUE, COLOR_GREEN, COLOR_GOLD, COLOR_MAGENTA, COLOR_CYAN]
+                        custom_colors = [COLOR_RED, COLOR_BLUE, COLOR_GREEN, COLOR_CYAN, COLOR_GOLD]
                         
                         fig_cat = px.pie(
                             cat_sum, 
@@ -301,7 +301,7 @@ elif choice == "台帳閲覧 (Audit)":
                         st.info("データなし")
 
             # --- 明細リスト ---
-            st.markdown("### 📝 支出明細 (日付順)")
+            st.markdown("### 📝 支出明細")
             display_cols = ['expense_date', 'category', 'item_name', 'amount', 'satisfaction', 'detail', 'entry_id']
             # カラム存在確認
             valid_cols = [c for c in display_cols if c in df_ex.columns]
@@ -324,7 +324,7 @@ elif choice == "管理・修正 (Admin)":
     with tab1:
         with st.form("new_trip_form"):
             t_name = st.text_input("旅行名")
-            t_budget = st.number_input("総予算 (JPY)", min_value=0, step=10000)
+            t_budget = st.number_input("総予算 ", min_value=0, step=10000)
             c1, c2 = st.columns(2)
             t_start = c1.date_input("開始日")
             t_end = c2.date_input("終了日")
