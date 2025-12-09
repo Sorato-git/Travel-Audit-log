@@ -275,22 +275,33 @@ elif choice == "台帳閲覧 (Audit)":
                     
                     st.plotly_chart(fig_budget, use_container_width=True)
 
-                # 2. カテゴリ別ドーナツ (凡例に%、中央に合計)
+# 2. カテゴリ別ドーナツ (固定順序: 食事->宿泊->交通->娯楽->雑費)
                 with col_g2:
                     if total_spent > 0:
                         cat_sum = df_ex.groupby('category')['amount'].sum().reset_index()
                         
-                        # 凡例用にラベルを加工: "Category (XX.X%)"
+                        # --- 順序強制ロジック ---
+                        # 指定された順序リスト
+                        fixed_order = ["食事", "宿泊", "交通", "娯楽/体験", "雑費"]
+                        
+                        # カテゴリをCategorical型に変換してソート順を強制する
+                        cat_sum['category'] = pd.Categorical(
+                            cat_sum['category'], 
+                            categories=fixed_order, 
+                            ordered=True
+                        )
+                        cat_sum = cat_sum.sort_values('category')
+                        # -----------------------
+
+                        # 凡例用にラベルを加工
                         cat_sum['percent'] = (cat_sum['amount'] / total_spent) * 100
                         cat_sum['label'] = cat_sum.apply(lambda x: f"{x['category']} ({x['percent']:.1f}%)", axis=1)
                         
-                        # 固定色マッピングの適用ロジック
-                        # 表示用のラベル(key)に対し、カテゴリ(value)に応じた色を割り当てるマップを作成
+                        # 色マッピング作成
                         chart_color_map = {}
                         for _, row in cat_sum.iterrows():
-                            cat_name = row['category']
+                            cat_name = str(row['category']) # Categorical型から文字列に戻す
                             label_name = row['label']
-                            # マップにないカテゴリはグレーにする安全策
                             chart_color_map[label_name] = CATEGORY_COLOR_MAP.get(cat_name, "#808080")
 
                         fig_cat = px.pie(
@@ -298,13 +309,14 @@ elif choice == "台帳閲覧 (Audit)":
                             values='amount', 
                             names='label', 
                             hole=0.6,
-                            # color引数でラベルを指定し、color_discrete_mapで実際の色を強制する
                             color='label',
                             color_discrete_map=chart_color_map
                         )
                         
                         # 中央に合計金額、テキスト非表示
-                        fig_cat.update_traces(textinfo='none')
+                        # sort=False にすることでDataFrameの並び順(fixed_order)を維持する
+                        fig_cat.update_traces(textinfo='none', sort=False, direction='clockwise')
+                        
                         fig_cat.update_layout(
                             title="カテゴリ別内訳",
                             annotations=[dict(text=f"¥{total_spent:,}", x=0.5, y=0.5, font_size=24, showarrow=False, font_weight="bold")],
@@ -435,3 +447,4 @@ elif choice == "管理・修正 (Admin)":
                         delete_trip_cascade(del_trip_id, target_name)
                     else:
                         st.error("名前不一致")
+
