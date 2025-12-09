@@ -56,14 +56,35 @@ def load_data(worksheet):
     data = worksheet.get_all_records()
     return pd.DataFrame(data)
 
-def add_trip(name, start, end, budget):
+def add_trip(name, start, end, budget, detail):
     t_id = str(uuid.uuid4())[:8]
     # Status初期値: Planning
-    new_row = [t_id, name, str(start), str(end), "Planning", budget]
+    # 列順序: trip_id, trip_name, start_date, end_date, status, total_budget, detail
+    new_row = [t_id, name, str(start), str(end), "Planning", budget, detail]
     worksheet_trips.append_row(new_row)
     st.toast(f"プロジェクト '{name}' を作成しました。")
     time.sleep(1)
     st.rerun()
+
+def update_trip_info(trip_id, name, start, end, budget, status, detail):
+    """旅行自体の情報を更新"""
+    try:
+        cell = worksheet_trips.find(trip_id, in_column=1)
+        row_num = cell.row
+        
+        # セル更新 (A=1, B=2, C=3, D=4, E=5, F=6, G=7)
+        worksheet_trips.update_cell(row_num, 2, name)
+        worksheet_trips.update_cell(row_num, 3, str(start))
+        worksheet_trips.update_cell(row_num, 4, str(end))
+        worksheet_trips.update_cell(row_num, 5, status)
+        worksheet_trips.update_cell(row_num, 6, budget)
+        worksheet_trips.update_cell(row_num, 7, detail) # detail (Col G)
+        
+        st.success(f"旅行 '{name}' の情報を更新しました。")
+        time.sleep(1)
+        st.rerun()
+    except Exception as e:
+        st.error(f"更新エラー: {e}")
 
 def add_expense(trip_id, category, item, amount, sat, detail, exp_date):
     e_id = str(uuid.uuid4())
@@ -144,15 +165,7 @@ def delete_trip_cascade(trip_id, trip_name):
     except Exception as e:
         st.error(f"完全削除中にエラーが発生しました: {e}")
 
-def update_trip_status(trip_id, new_status):
-    try:
-        cell = worksheet_trips.find(trip_id, in_column=1)
-        worksheet_trips.update_cell(cell.row, 5, new_status)
-        st.toast(f"ステータス更新: {new_status}")
-        time.sleep(1)
-        st.rerun()
-    except Exception as e:
-        st.error(f"更新エラー: {e}")
+
 
 # --- 3. UI構築 ---
 
@@ -353,13 +366,19 @@ elif choice == "管理・修正 (Admin)":
     
     with tab1:
         with st.form("new_trip_form"):
+            st.subheader("新規プロジェクト作成")
             t_name = st.text_input("旅行名")
-            t_budget = st.number_input("総予算 ", min_value=0, step=10000)
+            t_budget = st.number_input("総予算 (JPY)", min_value=0, step=10000)
             c1, c2 = st.columns(2)
             t_start = c1.date_input("開始日")
             t_end = c2.date_input("終了日")
+            t_detail = st.text_area("旅行の詳細・メモ (任意)")
+            
             if st.form_submit_button("登録"):
-                add_trip(t_name, t_start, t_end, t_budget)
+                if t_name:
+                    add_trip(t_name, t_start, t_end, t_budget, t_detail)
+                else:
+                    st.error("旅行名は必須です。")
 
     with tab2:
         st.subheader("既存データの修正")
@@ -412,15 +431,48 @@ elif choice == "管理・修正 (Admin)":
                 st.info("データがありません")
 
     with tab3:
+        st.subheader("旅行情報の修正")
         df_trips = load_data(worksheet_trips)
+        
         if not df_trips.empty:
-            t_dict = df_trips.set_index('trip_id')[['trip_name', 'status']].T.to_dict()
-            target_t_id = st.selectbox("旅行", list(t_dict.keys()), format_func=lambda x: f"{t_dict[x]['trip_name']} ({t_dict[x]['status']})", key="status_sel")
+            # G列(detail)が無い場合のガード
+            if 'detail' not in df_trips.columns:
+                df_trips['detail'] = ""
+
+            t_dict = df_trips.set_index('trip_id').T.to_dict()
+            # 選択肢表示
+            sel_t_id = st.selectbox("修正する旅行を選択", list(t_dict.keys()), format_func=lambda x: f"{t_dict[x]['trip_name']} ({t_dict[x]['status']})", key="mod_trip_sel")
             
-            # Planning追加
-            new_status = st.radio("状態変更", ["Planning", "Active", "Completed", "Cancelled"], horizontal=True)
-            if st.button("更新実行"):
-                update_trip_status(target_t_id, new_status)
+            # 現在値の取得
+            curr_data = t_dict[sel_t_id]
+            
+            with st.form("mod_trip_form"):
+                m_name = st.text_input("旅行名", value=curr_data['trip_name'])
+                m_budget = st.number_input("総予算", min_value=0, step=10000, value=int(str(curr_data['total_budget']).replace(',','')) if curr_data['total_budget'] else 0)
+                
+                c1, c2 = st.columns(2)
+                try:
+                    d_start = datetime.strptime(str(curr_data['start_date']), "%Y-%m-%d").date()
+                    d_end = datetime.strptime(str(curr_data['end_date']), "%Y-%m-%d").date()
+                except:
+                    d_start = datetime.today()
+                    d_end = datetime.today()
+                
+                m_start = c1.date_input("開始日", value=d_start)
+                m_end = c2.date_input("終了日", value=d_end)
+                
+                # ステータス選択
+                st_opts = ["Planning", "Active", "Completed", "Cancelled"]
+                curr_st = curr_data['status']
+                st_idx = st_opts.index(curr_st) if curr_st in st_opts else 0
+                m_status = st.selectbox("ステータス", st_opts, index=st_idx)
+                
+                m_detail = st.text_area("詳細・メモ", value=str(curr_data['detail']))
+                
+                if st.form_submit_button("旅行情報を更新"):
+                    update_trip_info(sel_t_id, m_name, m_start, m_end, m_budget, m_status, m_detail)
+        else:
+            st.info("旅行データがありません。")
 
     with tab4:
         st.subheader("データ削除")
