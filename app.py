@@ -142,7 +142,7 @@ def delete_trip_cascade(trip_id, trip_name):
             if 'trip_id' in df.columns:
                 remaining_df = df[df['trip_id'] != trip_id]
                 worksheet_expenses.clear()
-                # ヘッダー更新 (is_waste含む)
+                # ヘッダー更新 (is_waste含む) - ここが重要
                 header = ["entry_id", "trip_id", "timestamp", "category", "item_name", "amount", "satisfaction", "detail", "expense_date", "is_waste"]
                 worksheet_expenses.append_row(header)
                 if not remaining_df.empty:
@@ -173,7 +173,7 @@ def highlight_audit_rows(row):
     """
     styles = [''] * len(row)
     
-    # 浪費チェック (文字列 "TRUE" または boolean True)
+    # 浪費チェック
     is_waste = str(row.get('is_waste', '')).upper() == 'TRUE'
     
     # 満足度チェック
@@ -211,6 +211,7 @@ if choice == "支出記録 (Entry)":
             st.warning("進行中(Active)または計画中(Planning)の旅行がありません。")
         else:
             trip_options = active_trips.set_index('trip_id')['trip_name'].to_dict()
+            # str()で囲んでエラー回避
             selected_trip_id = st.selectbox("対象旅行", list(trip_options.keys()), format_func=lambda x: str(trip_options[x]))
 
             with st.form("expense_form"):
@@ -241,6 +242,7 @@ elif choice == "台帳閲覧 (Audit)":
     if not df_trips.empty:
         trip_options = df_trips.set_index('trip_id')['trip_name'].to_dict()
         filter_opts = ["ALL"] + list(trip_options.keys())
+        # str()で囲んでエラー回避
         target_trip = st.selectbox("フィルタ", filter_opts, format_func=lambda x: str(trip_options.get(x, "全プロジェクト")))
         
         df_ex = load_data(worksheet_expenses)
@@ -272,7 +274,6 @@ elif choice == "台帳閲覧 (Audit)":
                 total_spent = int(df_ex['amount'].sum())
                 
                 # 浪費合計の計算
-                # is_waste が "TRUE" (文字列) または True (bool) のものを抽出
                 waste_df = df_ex[df_ex['is_waste'].astype(str).str.upper() == "TRUE"]
                 total_waste = int(waste_df['amount'].sum())
                 
@@ -378,13 +379,22 @@ elif choice == "管理・修正 (Admin)":
         df_ex = load_data(worksheet_expenses)
         if not df_trips.empty and not df_ex.empty:
             t_dict = df_trips.set_index('trip_id')['trip_name'].to_dict()
+            # str()で囲んでエラー回避
             sel_t_id = st.selectbox("修正対象の旅行", list(t_dict.keys()), format_func=lambda x: str(t_dict[x]), key="edit_trip_sel")
             trip_expenses = df_ex[df_ex['trip_id'] == sel_t_id].copy()
             
             if not trip_expenses.empty:
                 if 'expense_date' not in trip_expenses.columns:
                      trip_expenses['expense_date'] = trip_expenses['timestamp'].astype(str).str.split(" ").str[0]
-                trip_expenses['label'] = trip_expenses['expense_date'].astype(str) + " - " + trip_expenses['item_name'] + " (¥" + trip_expenses['amount'].astype(str) + ")"
+                
+                # --- 修正箇所: 全て文字列に変換してから結合する ---
+                trip_expenses['expense_date'] = trip_expenses['expense_date'].astype(str)
+                trip_expenses['item_name'] = trip_expenses['item_name'].fillna('').astype(str)
+                trip_expenses['amount'] = trip_expenses['amount'].fillna(0).astype(str)
+                
+                trip_expenses['label'] = trip_expenses['expense_date'] + " - " + trip_expenses['item_name'] + " (¥" + trip_expenses['amount'] + ")"
+                # -----------------------------------------------
+                
                 exp_dict = trip_expenses.set_index('entry_id')['label'].to_dict()
                 sel_exp_id = st.selectbox("修正項目", list(exp_dict.keys()), format_func=lambda x: exp_dict[x])
                 target_row = trip_expenses[trip_expenses['entry_id'] == sel_exp_id].iloc[0]
@@ -396,7 +406,7 @@ elif choice == "管理・修正 (Admin)":
                     new_date = st.date_input("支出日", value=curr_date)
                     new_item = st.text_input("品目・店名", value=target_row['item_name'])
                     c1, c2 = st.columns(2)
-                    new_amount = c1.number_input("金額", min_value=0, value=int(target_row['amount']), step=100)
+                    new_amount = c1.number_input("金額", min_value=0, value=int(float(target_row['amount'])), step=100)
                     curr_cat = target_row['category']
                     cat_opts = ["食事", "宿泊", "交通", "娯楽/体験", "雑費"]
                     cat_idx = cat_opts.index(curr_cat) if curr_cat in cat_opts else 0
@@ -416,12 +426,13 @@ elif choice == "管理・修正 (Admin)":
             else: st.info("データがありません")
 
     with tab3:
-        # 旅行修正ロジック (変更なし、前回のまま)
+        # 旅行修正ロジック
         st.subheader("旅行情報の修正")
         df_trips = load_data(worksheet_trips)
         if not df_trips.empty:
             if 'detail' not in df_trips.columns: df_trips['detail'] = ""
             t_dict = df_trips.set_index('trip_id').T.to_dict()
+            # str()で囲んでエラー回避
             sel_t_id = st.selectbox("修正する旅行を選択", list(t_dict.keys()), format_func=lambda x: f"{t_dict[x]['trip_name']} ({t_dict[x]['status']})", key="mod_trip_sel")
             curr_data = t_dict[sel_t_id]
             with st.form("mod_trip_form"):
@@ -443,7 +454,7 @@ elif choice == "管理・修正 (Admin)":
                     update_trip_info(sel_t_id, m_name, m_start, m_end, m_budget, m_status, m_detail)
 
     with tab4:
-        # データ削除ロジック (変更なし)
+        # データ削除ロジック
         st.subheader("データ削除")
         del_type = st.radio("削除対象", ["支出データ (1件)", "旅行プロジェクト (全体)"], horizontal=True)
         if del_type == "支出データ (1件)":
@@ -454,6 +465,7 @@ elif choice == "管理・修正 (Admin)":
             df_trips = load_data(worksheet_trips)
             if not df_trips.empty:
                 t_dict = df_trips.set_index('trip_id')['trip_name'].to_dict()
+                # str()で囲んでエラー回避
                 del_trip_id = st.selectbox("削除する旅行", list(t_dict.keys()), format_func=lambda x: str(t_dict[x]), key="del_trip_sel")
                 target_name = t_dict[del_trip_id]
                 st.warning(f"警告: 「{target_name}」を削除します。")
@@ -461,6 +473,3 @@ elif choice == "管理・修正 (Admin)":
                 if st.button("プロジェクト完全抹消"):
                     if confirm_name == target_name: delete_trip_cascade(del_trip_id, target_name)
                     else: st.error("名前不一致")
-
-
-
