@@ -211,7 +211,7 @@ if choice == "支出記録 (Entry)":
             st.warning("進行中(Active)または計画中(Planning)の旅行がありません。")
         else:
             trip_options = active_trips.set_index('trip_id')['trip_name'].to_dict()
-            selected_trip_id = st.selectbox("対象旅行", list(trip_options.keys()), format_func=lambda x: trip_options[x])
+            selected_trip_id = st.selectbox("対象旅行", list(trip_options.keys()), format_func=lambda x: str(trip_options[x]))
 
             with st.form("expense_form"):
                 exp_date = st.date_input("支出日 (未記入時は本日)", value=datetime.today())
@@ -241,7 +241,7 @@ elif choice == "台帳閲覧 (Audit)":
     if not df_trips.empty:
         trip_options = df_trips.set_index('trip_id')['trip_name'].to_dict()
         filter_opts = ["ALL"] + list(trip_options.keys())
-        target_trip = st.selectbox("フィルタ", filter_opts, format_func=lambda x: trip_options.get(x, "全プロジェクト"))
+        target_trip = st.selectbox("フィルタ", filter_opts, format_func=lambda x: str(trip_options.get(x, "全プロジェクト")))
         
         df_ex = load_data(worksheet_expenses)
         
@@ -461,4 +461,5 @@ elif choice == "管理・修正 (Admin)":
                 if st.button("プロジェクト完全抹消"):
                     if confirm_name == target_name: delete_trip_cascade(del_trip_id, target_name)
                     else: st.error("名前不一致")
+
 
