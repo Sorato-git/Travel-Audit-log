@@ -12,13 +12,22 @@ import plotly.express as px
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 SPREADSHEET_NAME = "TravelAuditDB"
 
-# カラーパレット
-COLOR_RED = "#FF4B4B"
-COLOR_BLUE = "#4B4BFF"
-COLOR_GREEN = "#4BFF4B"
-COLOR_GOLD = "#FFD700"
-COLOR_CYAN = "#008B8B"
-COLOR_MAGENTA = "#FF00FF"
+# カラーパレット定義
+COLOR_RED = "#FF4B4B"    # 食事
+COLOR_BLUE = "#4B4BFF"   # 宿泊
+COLOR_GREEN = "#4BFF4B"  # 交通
+COLOR_CYAN = "#008B8B"   # 娯楽/体験 (ユーザー指定色)
+COLOR_GOLD = "#FFD700"   # 雑費
+COLOR_MAGENTA = "#FF00FF" # その他予備
+
+# カテゴリごとの色固定マッピング
+CATEGORY_COLOR_MAP = {
+    "食事": COLOR_RED,
+    "宿泊": COLOR_BLUE,
+    "交通": COLOR_GREEN,
+    "娯楽/体験": COLOR_CYAN,
+    "雑費": COLOR_GOLD
+}
 
 st.set_page_config(page_title="Travel Audit Log", layout="wide")
 
@@ -147,7 +156,7 @@ def update_trip_status(trip_id, new_status):
 
 # --- 3. UI構築 ---
 
-st.title("Travel Audit Log") # v表記なし
+st.title("Travel Audit Log")
 
 menu = ["支出記録 (Entry)", "台帳閲覧 (Audit)", "管理・修正 (Admin)"]
 choice = st.sidebar.radio("Menu", menu)
@@ -227,11 +236,11 @@ elif choice == "台帳閲覧 (Audit)":
                 
                 col_g1, col_g2 = st.columns(2)
                 
-                # 1. 予算消化バー (巨大文字 & 色変化)
+                # 1. 予算消化バー 
                 with col_g1:
                     ratio = (total_spent / budget) * 100
-                    # 予算オーバーなら赤、以内なら青
-                    bar_color = COLOR_RED if total_spent > budget else COLOR_BLUE
+                    # 予算オーバーなら赤、以内なら緑
+                    bar_color = COLOR_RED if total_spent > budget else COLOR_GREEN
                     
                     fig_budget = go.Figure()
                     
@@ -275,14 +284,23 @@ elif choice == "台帳閲覧 (Audit)":
                         cat_sum['percent'] = (cat_sum['amount'] / total_spent) * 100
                         cat_sum['label'] = cat_sum.apply(lambda x: f"{x['category']} ({x['percent']:.1f}%)", axis=1)
                         
-                        custom_colors = [COLOR_RED, COLOR_BLUE, COLOR_GREEN, COLOR_CYAN, COLOR_GOLD]
-                        
+                        # 固定色マッピングの適用ロジック
+                        # 表示用のラベル(key)に対し、カテゴリ(value)に応じた色を割り当てるマップを作成
+                        chart_color_map = {}
+                        for _, row in cat_sum.iterrows():
+                            cat_name = row['category']
+                            label_name = row['label']
+                            # マップにないカテゴリはグレーにする安全策
+                            chart_color_map[label_name] = CATEGORY_COLOR_MAP.get(cat_name, "#808080")
+
                         fig_cat = px.pie(
                             cat_sum, 
                             values='amount', 
-                            names='label', # 加工したラベルを使用(凡例用)
+                            names='label', 
                             hole=0.6,
-                            color_discrete_sequence=custom_colors
+                            # color引数でラベルを指定し、color_discrete_mapで実際の色を強制する
+                            color='label',
+                            color_discrete_map=chart_color_map
                         )
                         
                         # 中央に合計金額、テキスト非表示
