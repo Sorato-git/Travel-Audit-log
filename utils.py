@@ -165,6 +165,7 @@ def delete_trip_cascade(trip_id, trip_name):
     ws_trip = get_worksheet_object("trips")
     status_box = st.empty()
     status_box.info("⚠️ 関連データの削除処理を開始します...")
+    time.sleep(2)
     try:
         all_expenses = ws_exp.get_all_records()
         if all_expenses:
