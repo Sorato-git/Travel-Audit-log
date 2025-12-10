@@ -8,19 +8,18 @@ import time
 import plotly.graph_objects as go
 import plotly.express as px
 
-# --- 1. 設定 & 接続 ---
+# --- 1. 設定 & 接続 (堅牢化) ---
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 SPREADSHEET_NAME = "TravelAuditDB"
 
 # カラーパレット
-COLOR_RED = "#FF4B4B"    # 食事 / 警告
-COLOR_BLUE = "#4B4BFF"   # 宿泊
-COLOR_GREEN = "#4BFF4B"  # 交通
-COLOR_CYAN = "#008B8B"   # 娯楽/体験
-COLOR_GOLD = "#FFD700"   # 雑費 / 浪費警告
-COLOR_MAGENTA = "#FF00FF" # その他
-COLOR_TOMATO = "#ff6347"  # 低満足度警告
-COLOR_GREY = "#7f8c8d"    # 未評価(未来)
+COLOR_RED = "#FF4B4B"
+COLOR_BLUE = "#4B4BFF"
+COLOR_GREEN = "#4BFF4B"
+COLOR_CYAN = "#008B8B"
+COLOR_GOLD = "#FFD700"
+COLOR_MAGENTA = "#FF00FF"
+COLOR_TOMATO = "#ff6347"
 
 CATEGORY_COLOR_MAP = {
     "食事": COLOR_RED,
@@ -39,14 +38,14 @@ def execute_with_retry(func, *args, max_retries=3, **kwargs):
             return func(*args, **kwargs)
         except gspread.exceptions.APIError as e:
             if i == max_retries - 1:
-                st.error(f"Google APIエラー: {e}")
+                st.error(f"Google APIエラー (Wait & Retry Failed): {e}")
                 st.stop()
             time.sleep(1 + i)
         except Exception as e:
             st.error(f"予期せぬエラー: {e}")
             st.stop()
 
-# DB接続キャッシュ
+# DB接続のキャッシュ
 @st.cache_resource(ttl=600)
 def connect_db():
     try:
@@ -62,6 +61,7 @@ def connect_db():
         st.error(f"データベース接続失敗: {e}")
         st.stop()
 
+# ワークシート取得ヘルパー
 def get_worksheet_object(sheet_name):
     sheet = connect_db()
     try:
@@ -70,7 +70,8 @@ def get_worksheet_object(sheet_name):
         st.error(f"ワークシート '{sheet_name}' が見つかりません。")
         st.stop()
 
-# --- 2. データ読み込み (キャッシュ) ---
+# --- 2. データ読み込み (Data Cache) ---
+
 @st.cache_data(ttl=300)
 def load_cached_data(sheet_name):
     ws = get_worksheet_object(sheet_name)
@@ -83,15 +84,18 @@ def load_cached_data(sheet_name):
         return pd.DataFrame(data)
 
 def clear_all_caches():
+    """書き込みを行った後にキャッシュを破棄する"""
     load_cached_data.clear()
 
-# --- 3. 書き込みロジック ---
+# --- 3. 書き込みロジック (キャッシュ破棄付き) ---
 
 def add_trip(name, start, end, budget, detail):
     ws = get_worksheet_object("trips")
     t_id = str(uuid.uuid4())[:8]
     new_row = [t_id, name, str(start), str(end), "Planning", budget, detail]
+    
     execute_with_retry(ws.append_row, new_row)
+    
     clear_all_caches()
     st.toast(f"プロジェクト '{name}' を作成しました。")
     time.sleep(1)
@@ -108,6 +112,7 @@ def update_trip_info(trip_id, name, start, end, budget, status, detail):
         ws.update_cell(row_num, 5, status)
         ws.update_cell(row_num, 6, budget)
         ws.update_cell(row_num, 7, detail)
+        
         clear_all_caches()
         st.success(f"旅行 '{name}' の情報を更新しました。")
         time.sleep(1)
@@ -122,9 +127,10 @@ def add_expense(trip_id, category, item, amount, sat, detail, exp_date, is_waste
     date_str = str(exp_date) if exp_date else datetime.now().strftime("%Y-%m-%d")
     waste_str = "TRUE" if is_waste else "FALSE"
     
-    # satが0の場合は「未評価」扱い
     new_row = [e_id, trip_id, ts, category, item, amount, sat, detail, date_str, waste_str]
+    
     execute_with_retry(ws.append_row, new_row)
+    
     clear_all_caches()
     st.toast("支出を監査ログに記録しました。")
     time.sleep(1)
@@ -157,8 +163,11 @@ def delete_row_simple(worksheet_name, id_col_val, id_col_index=1):
     ws = get_worksheet_object(worksheet_name)
     try:
         cell = ws.find(id_col_val, in_column=id_col_index)
-        if hasattr(ws, 'delete_rows'): ws.delete_rows(cell.row)
-        else: ws.delete_row(cell.row)
+        if hasattr(ws, 'delete_rows'):
+            ws.delete_rows(cell.row)
+        else:
+            ws.delete_row(cell.row)
+        
         clear_all_caches()
         st.success("削除完了")
         time.sleep(1)
@@ -169,26 +178,35 @@ def delete_row_simple(worksheet_name, id_col_val, id_col_index=1):
 def delete_trip_cascade(trip_id, trip_name):
     ws_exp = get_worksheet_object("expenses")
     ws_trip = get_worksheet_object("trips")
+    
     status_box = st.empty()
     status_box.info("⚠️ 関連データの削除処理を開始します...")
     try:
         all_expenses = ws_exp.get_all_records()
+        
         if all_expenses:
             df = pd.DataFrame(all_expenses)
             if 'trip_id' in df.columns:
                 remaining_df = df[df['trip_id'] != trip_id]
+                
+                # シートクリア & 再構築
                 ws_exp.clear()
                 header = ["entry_id", "trip_id", "timestamp", "category", "item_name", "amount", "satisfaction", "detail", "expense_date", "is_waste"]
                 ws_exp.append_row(header)
+                
                 if not remaining_df.empty:
                     for col in header:
-                        if col not in remaining_df.columns: remaining_df[col] = ""
+                        if col not in remaining_df.columns:
+                            remaining_df[col] = ""
                     data_to_write = remaining_df[header].values.tolist()
                     ws_exp.append_rows(data_to_write)
         
         cell = ws_trip.find(trip_id, in_column=1)
-        if hasattr(ws_trip, 'delete_rows'): ws_trip.delete_rows(cell.row)
-        else: ws_trip.delete_row(cell.row)
+        if hasattr(ws_trip, 'delete_rows'):
+            ws_trip.delete_rows(cell.row)
+        else:
+            ws_trip.delete_row(cell.row)
+            
         clear_all_caches()
         status_box.success(f"旅行「{trip_name}」と全関連データの完全消去が完了しました。")
         time.sleep(2)
@@ -198,16 +216,11 @@ def delete_trip_cascade(trip_id, trip_name):
 
 # --- スタイリング関数 ---
 def highlight_audit_rows(row):
-    """
-    1. 浪費(is_waste) -> GOLD
-    2. 未評価(satisfaction=0) -> GREY
-    3. 低満足度(<=3) -> TOMATO
-    """
     is_waste = str(row.get('is_waste', '')).upper() == 'TRUE'
     try:
-        sat = int(row.get('satisfaction', 0))
+        sat = int(row.get('satisfaction', 10))
     except:
-        sat = 0
+        sat = 10
         
     if is_waste:
         return ['background-color: #FFD700; color: black'] * len(row)
@@ -237,6 +250,7 @@ if choice == "支出記録 (Entry)":
             st.warning("進行中(Active)または計画中(Planning)の旅行がありません。")
         else:
             trip_options = active_trips.set_index('trip_id')['trip_name'].to_dict()
+            # str()キャスト: selectboxのエラー防止
             selected_trip_id = st.selectbox("対象旅行", list(trip_options.keys()), format_func=lambda x: str(trip_options[x]))
 
             with st.form("expense_form"):
@@ -248,13 +262,16 @@ if choice == "支出記録 (Entry)":
                 
                 st.markdown("---")
                 
-                # --- 未来日付ロジック ---
+                # --- 未来日付 or 手動未評価ロジック ---
                 today = date.today()
                 is_future = exp_date > today
                 
-                if is_future:
-                    st.info(f"📅 未来の日付 ({exp_date}) が指定されました。「未評価 (Pending)」として記録します。")
-                    sat = 0 # 自動的に0
+                # 手動チェックボックス (未来日付ならデフォルトON)
+                is_pending = st.checkbox("未評価 (Pending) として記録 - 後で採点する", value=is_future)
+                
+                if is_pending:
+                    sat = 0
+                    st.caption("※ 満足度は 0 (未評価) として記録されます。")
                 else:
                     sat = st.slider("満足度 (ROI監査)", 1, 10, 5)
                 
@@ -299,6 +316,7 @@ elif choice == "台帳閲覧 (Audit)":
                 budget_val = budget_row['total_budget'].iloc[0]
                 budget = int(budget_val) if not budget_row.empty and budget_val else 1
                 total_spent = int(df_ex['amount'].sum())
+                
                 waste_df = df_ex[df_ex['is_waste'].astype(str).str.upper() == "TRUE"]
                 total_waste = int(waste_df['amount'].sum())
                 
@@ -309,6 +327,7 @@ elif choice == "台帳閲覧 (Audit)":
                 
                 col_g1, col_g2 = st.columns(2)
                 
+                # 1. 予算消化バー
                 with col_g1:
                     ratio = (total_spent / budget) * 100
                     bar_color = COLOR_RED if total_spent > budget else COLOR_GREEN
@@ -326,6 +345,7 @@ elif choice == "台帳閲覧 (Audit)":
                     fig_budget.add_vline(x=budget, line_width=3, line_dash="dash", line_color="white", annotation_text="Budget")
                     st.plotly_chart(fig_budget, use_container_width=True)
 
+                # 2. カテゴリ別ドーナツ
                 with col_g2:
                     if total_spent > 0:
                         cat_sum = df_ex.groupby('category')['amount'].sum().reset_index()
@@ -355,15 +375,19 @@ elif choice == "台帳閲覧 (Audit)":
 
             st.markdown("### 📝 支出明細")
             csv = df_ex.to_csv(index=False).encode('utf-8-sig')
-            st.download_button(label="CSVエクスポート", data=csv, file_name=f'travel_audit_{datetime.now().strftime("%Y%m%d")}.csv', mime='text/csv')
+            st.download_button(
+                label="CSVエクスポート", data=csv,
+                file_name=f'travel_audit_{datetime.now().strftime("%Y%m%d")}.csv', mime='text/csv'
+            )
 
             display_cols = ['expense_date', 'category', 'item_name', 'amount', 'satisfaction', 'is_waste', 'detail', 'entry_id']
             valid_cols = [c for c in display_cols if c in df_ex.columns]
             sorted_df = df_ex[valid_cols].sort_values(by='expense_date', ascending=False)
             
-            # 満足度0の場合の表示調整（0 -> "Pending"）はデータフレームの表示上で行うのが理想だが
-            # ここではスタイリング（背景色）で表現する
-            st.dataframe(sorted_df.style.apply(highlight_audit_rows, axis=1), use_container_width=True, hide_index=True)
+            st.dataframe(
+                sorted_df.style.apply(highlight_audit_rows, axis=1),
+                use_container_width=True, hide_index=True
+            )
         else:
             st.info("支出データなし")
 
@@ -396,9 +420,11 @@ elif choice == "管理・修正 (Admin)":
                 if 'expense_date' not in trip_expenses.columns:
                      trip_expenses['expense_date'] = trip_expenses['timestamp'].astype(str).str.split(" ").str[0]
                 
+                # 型変換 (TypeError対策)
                 trip_expenses['expense_date'] = trip_expenses['expense_date'].astype(str)
                 trip_expenses['item_name'] = trip_expenses['item_name'].fillna('').astype(str)
                 trip_expenses['amount'] = trip_expenses['amount'].fillna(0).astype(str)
+                
                 trip_expenses['label'] = trip_expenses['expense_date'] + " - " + trip_expenses['item_name'] + " (¥" + trip_expenses['amount'] + ")"
                 
                 exp_dict = trip_expenses.set_index('entry_id')['label'].to_dict()
@@ -419,14 +445,22 @@ elif choice == "管理・修正 (Admin)":
                     new_cat = c2.selectbox("カテゴリ", cat_opts, index=cat_idx)
                     
                     st.markdown("---")
-                    # 現在の値が0なら未評価状態
+                    
+                    # 満足度ロジック
                     curr_sat = int(float(target_row['satisfaction']))
                     
-                    # 修正時は未来かどうかに関わらずスライダーを表示（後で評価するため）
-                    new_sat = st.slider("満足度 (0=未評価)", 0, 10, curr_sat)
-                    if new_sat == 0:
-                        st.caption("※ 0 は「未評価 (Pending)」として扱われます。")
+                    # 現在が0(未評価)かどうか
+                    is_currently_pending = (curr_sat == 0)
+                    new_is_pending = st.checkbox("未評価 (Pending) に設定する", value=is_currently_pending)
                     
+                    if new_is_pending:
+                        new_sat = 0
+                        st.caption("※ 0 (未評価) として保存されます。")
+                    else:
+                        # 未評価から切り替える場合はデフォルト5、そうでなければ現在の値
+                        default_sat = 5 if is_currently_pending else curr_sat
+                        new_sat = st.slider("満足度", 1, 10, default_sat)
+
                     curr_waste_val = str(target_row.get('is_waste', 'FALSE')).upper() == 'TRUE'
                     new_waste = st.checkbox("浪費 (Avoidable Waste)", value=curr_waste_val)
                     new_detail = st.text_area("詳細", value=target_row['detail'])
