@@ -249,12 +249,28 @@ if choice == "支出記録 (Entry)":
         if active_trips.empty:
             st.warning("進行中(Active)または計画中(Planning)の旅行がありません。")
         else:
-            trip_options = active_trips.set_index('trip_id')['trip_name'].to_dict()
-            # str()キャスト: selectboxのエラー防止
-            selected_trip_id = st.selectbox("対象旅行", list(trip_options.keys()), format_func=lambda x: str(trip_options[x]))
+            # --- 重要変更: フォームの外に出すことでリアルタイム更新を実現 ---
+            col_top1, col_top2 = st.columns(2)
+            
+            with col_top1:
+                trip_options = active_trips.set_index('trip_id')['trip_name'].to_dict()
+                selected_trip_id = st.selectbox("対象旅行", list(trip_options.keys()), format_func=lambda x: str(trip_options[x]))
+            
+            with col_top2:
+                # 日付を変更した瞬間に画面が更新されるようになる
+                exp_date = st.date_input("支出日 (未記入時は本日)", value=datetime.today())
+
+            # --- 未来判定ロジック (フォーム外で計算) ---
+            today = date.today()
+            is_future = exp_date > today
+            
+            # 視覚的フィードバックエリア
+            if is_future:
+                st.info(f"📅 **未来の日付 ({exp_date}) です。** 自動的に「未評価 (Pending)」として記録されます。")
+            else:
+                pass # 通常表示
 
             with st.form("expense_form"):
-                exp_date = st.date_input("支出日 (未記入時は本日)", value=datetime.today())
                 item = st.text_input("品目・店名")
                 col1, col2 = st.columns(2)
                 amount = col1.number_input("金額", min_value=0, step=100)
@@ -262,16 +278,13 @@ if choice == "支出記録 (Entry)":
                 
                 st.markdown("---")
                 
-                # --- 未来日付 or 手動未評価ロジック ---
-                today = date.today()
-                is_future = exp_date > today
-                
-                # 手動チェックボックス (未来日付ならデフォルトON)
+                # 手動未評価チェックボックス
+                # 未来なら強制的にON(disabled化はしないがデフォルトON)、過去ならデフォルトOFF
                 is_pending = st.checkbox("未評価 (Pending) として記録 - 後で採点する", value=is_future)
                 
                 if is_pending:
                     sat = 0
-                    st.caption("※ 満足度は 0 (未評価) として記録されます。")
+                    st.caption("※ 満足度は **0 (未評価)** として記録されます。")
                 else:
                     sat = st.slider("満足度 (ROI監査)", 1, 10, 5)
                 
@@ -327,7 +340,6 @@ elif choice == "台帳閲覧 (Audit)":
                 
                 col_g1, col_g2 = st.columns(2)
                 
-                # 1. 予算消化バー
                 with col_g1:
                     ratio = (total_spent / budget) * 100
                     bar_color = COLOR_RED if total_spent > budget else COLOR_GREEN
@@ -345,7 +357,6 @@ elif choice == "台帳閲覧 (Audit)":
                     fig_budget.add_vline(x=budget, line_width=3, line_dash="dash", line_color="white", annotation_text="Budget")
                     st.plotly_chart(fig_budget, use_container_width=True)
 
-                # 2. カテゴリ別ドーナツ
                 with col_g2:
                     if total_spent > 0:
                         cat_sum = df_ex.groupby('category')['amount'].sum().reset_index()
@@ -420,11 +431,9 @@ elif choice == "管理・修正 (Admin)":
                 if 'expense_date' not in trip_expenses.columns:
                      trip_expenses['expense_date'] = trip_expenses['timestamp'].astype(str).str.split(" ").str[0]
                 
-                # 型変換 (TypeError対策)
                 trip_expenses['expense_date'] = trip_expenses['expense_date'].astype(str)
                 trip_expenses['item_name'] = trip_expenses['item_name'].fillna('').astype(str)
                 trip_expenses['amount'] = trip_expenses['amount'].fillna(0).astype(str)
-                
                 trip_expenses['label'] = trip_expenses['expense_date'] + " - " + trip_expenses['item_name'] + " (¥" + trip_expenses['amount'] + ")"
                 
                 exp_dict = trip_expenses.set_index('entry_id')['label'].to_dict()
@@ -446,18 +455,16 @@ elif choice == "管理・修正 (Admin)":
                     
                     st.markdown("---")
                     
-                    # 満足度ロジック
                     curr_sat = int(float(target_row['satisfaction']))
-                    
-                    # 現在が0(未評価)かどうか
                     is_currently_pending = (curr_sat == 0)
+                    
+                    # 修正時もチェックボックスを用意
                     new_is_pending = st.checkbox("未評価 (Pending) に設定する", value=is_currently_pending)
                     
                     if new_is_pending:
                         new_sat = 0
                         st.caption("※ 0 (未評価) として保存されます。")
                     else:
-                        # 未評価から切り替える場合はデフォルト5、そうでなければ現在の値
                         default_sat = 5 if is_currently_pending else curr_sat
                         new_sat = st.slider("満足度", 1, 10, default_sat)
 
